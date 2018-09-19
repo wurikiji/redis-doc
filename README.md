@@ -1,4 +1,6 @@
 # Redis documentation
+## Translated to Korean
+- [lru-cache.md](topics/lru-cache.md)
 
 ## Clients
 
