@@ -1,191 +1,91 @@
-Using Redis as an LRU cache
-===
+# Redis를 LRU 캐시로 사용하기
 
-When Redis is used as a cache, often it is handy to let it automatically
-evict old data as you add new one. This behavior is very well known in the
-community of developers, since it is the default behavior of the popular
-*memcached* system.
+Redis를 캐시로 사용할 경우 새로운 데이터를 입력할 때 오래된 데이터를 자동적으로 후위 저장장치로 전송하는데 용이하다. 이러한 동작은 `memcached` 시스템과 동일하다. 
 
-LRU is actually only one of the supported eviction methods. This page covers
-the more general topic of the Redis `maxmemory` directive that is used in
-order to limit the memory usage to a fixed amount, and it also covers in
-depth the LRU algorithm used by Redis, that is actually an approximation of
-the exact LRU.
+LRU는 Redis에서 지원하는 캐시 리플레이스먼트  알고리즘 중 하나이다. 본 문서에서는 Redis에서 고정된 양의 메모리만 사용하도록 하는 maxmemory 명령에 대해서 알아보고, 유사 LRU인 Redis의 LRU 알고리즘에 대해서 알아본다. 
 
-Starting with Redis version 4.0, a new LFU (Least Frequently Used) eviction
-policy was introduced. This is covered in a separated section of this documentation.
+Redis 4.0부터 LFU (Least Frequently Used) 알고리즘이 등장하였고, 본 문서의 마지막에 다룬다. 
 
-Maxmemory configuration directive
----
+## Maxmemory 설정 명령
 
-The `maxmemory` configuration directive is used in order to configure Redis
-to use a specified amount of memory for the data set. It is possible to
-set the configuration directive using the `redis.conf` file, or later using
-the `CONFIG SET` command at runtime.
+`maxmemory` 는 Redis가 사용하는 메모리 중 데이터 셋을 위한 메모리의 양을 특정 크기로 지정하는 명령이다. `redis.conf` 파일을 통해 지정 가능하며, `config set` 명령어를 통해 런타임 중 변경도 가능하다. 
 
-For example in order to configure a memory limit of 100 megabytes, the
-following directive can be used inside the `redis.conf` file.
+예를 들어, `maxmemory 100mb`를 redis.conf에 선언하는 것으로 Redis의 최대 메모리를 100 메가바이트로 제한할 수 있다.
 
-    maxmemory 100mb
+maxmemory를 0으로 지정할 경우 메모리 사용량에 제한이 없음을 의미하며, 64비트 시스템에서 Redis의 기본 설정값이다. 32bit 시스템에서는 3GB로 제한된다. 
 
-Setting `maxmemory` to zero results into no memory limits. This is the
-default behavior for 64 bit systems, while 32 bit systems use an implicit
-memory limit of 3GB.
+최대 메모리까지 모두 사용한 경우 [캐시 교체 정책](#캐시 교체 정책)에 따라 동작이 달라 진다. 단순하게는 메모리를 추가로 요구하는 명령에 대해서 에러를 반환하는 것부터, 새로운 데이터가 추가 될때 마다 오래된 데이터를 교체하는 방식까지 다양한 정책이 존재한다. 
 
-When the specified amount of memory is reached, it is possible to select
-among different behaviors, called **policies**.
-Redis can just return errors for commands that could result in more memory
-being used, or it can evict some old data in order to return back to the
-specified limit every time new data is added.
+## 캐시 교체 정책
 
-Eviction policies
----
+maxmemory 사용량에 도달한 경우 Redis의 동작을 조절하기 위해서는 `maxmemory-policy` 옵션을 설정하면 된다. 사용 가능한 정책은 아래와 같다:
 
-The exact behavior Redis follows when the `maxmemory` limit is reached is
-configured using the `maxmemory-policy` configuration directive.
+- **noeviction**: 추가 메모리를 요하는 명령에 대해서 에러를 반환한다.
+- **allkeys-lru**: LRU 방식으로 키를 선정한다.
+- **volatile-lru**: **expire set** 포함된 키들 내에서만 LRU 방식으로 선정한다.
+- **allkeys-random**: 랜덤한 키를 선정한다.
+- **volatile-random**: **expire set**에 포함된 키들 내에서 랜덤한 키를 선정한다.
+- **volatile-ttl**: **expire set**에 포함된 키들 중에서 가장 짧은 TTL (time to live)를 가진 키를 선정한다.
 
-The following policies are available:
+**volatile-lru**, **volatile-random** 과 **volatile-ttl**을 사용할 때, 교체 선정 대상이 없을 경우 **noeviction**과 유사하게 동작한다. 
 
-* **noeviction**: return errors when the memory limit was reached and the client is trying to execute commands that could result in more memory to be used (most write commands, but `DEL` and a few more exceptions).
-* **allkeys-lru**: evict keys by trying to remove the less recently used (LRU) keys first, in order to make space for the new data added.
-* **volatile-lru**: evict keys by trying to remove the less recently used (LRU) keys first, but only among keys that have an **expire set**, in order to make space for the new data added.
-* **allkeys-random**: evict keys randomly in order to make space for the new data added.
-* **volatile-random**: evict keys randomly in order to make space for the new data added, but only evict keys with an **expire set**.
-* **volatile-ttl**: evict keys with an **expire set**, and try to evict keys with a shorter time to live (TTL) first, in order to make space for the new data added.
+사용하려는 애플리케이션의 동작 패턴에 따라서 알맞는 교체 정책을 선택하는 것이 중요하다. 애플리케이션이 동작중에도 실시간으로 교체 정책을 변경할 수 있으며, `INFO` 출력을 통해 캐시 미스, 캐시 히트 등과 같은 관련 정보를 확인하면서 튜닝을 수행할 수 있다. 
 
-The policies **volatile-lru**, **volatile-random** and **volatile-ttl** behave like **noeviction** if there are no keys to evict matching the prerequisites.
+경험적으로 아래와 같은 규칙이 가장 일반적이다:
 
-To pick the right eviction policy is important depending on the access pattern 
-of your application, however you can reconfigure the policy at runtime while 
-the application is running, and monitor the number of cache misses and hits 
-using the Redis `INFO` output in order to tune your setup.
+- 사용하는 애플리케이션의 용도나 데이터 접근 패턴이 확실하지 않거나, 데이터의 일부가 다른 부분보다 상대적으로 많이 접근되는 경우라면 **allkeys-lru**를 사용하는 것이 좋다.
+- 데이터 접근 패턴이 모든 데이터에 대해 동일한 확률로 접근하는 패턴이거나, 모든 데이터를 순회하는 패턴일 경우 **allkeys-random**을 사용하는 것이 좋다.
+- 데이터들에 대해 TTL 힌트를 줄 수 있는 경우 캐싱할 데이터를 생성하는 시점에서 서로다른 TTL 값을 적용한뒤, **volatile-ttl** 정책을 사용하는 것이 좋다. 
 
-In general as a rule of thumb:
+하나의 Redis 인스턴스를 캐싱 목적과 persistent 데이터베이스 목적으로 섞어서 사용하는 경우 **volatile-lru** 나 **volatile-random** 정책을 사용하는 것이 좋다. 그러나 이 경우는 보통 서로 다른 두개의 Redis 인스턴스로 분리하여 따로 관리하는 것이 더욱 효율적이다.
 
-* Use the **allkeys-lru** policy when you expect a power-law distribution in the popularity of your requests, that is, you expect that a subset of elements will be accessed far more often than the rest. **This is a good pick if you are unsure**.
-* Use the **allkeys-random** if you have a cyclic access where all the keys are scanned continuously, or when you expect the distribution to be uniform (all elements likely accessed with the same probability).
-* Use the **volatile-ttl** if you want to be able to provide hints to Redis about what are good candidate for expiration by using different TTL values when you create your cache objects.
+각 키에 대해 만료 기한을 부여할때는 추가적인 메모리가 필요하므로 **allkeys-lru** 등의 정책을 사용하는 것이 훨씬 메모리 효율적이다. 
 
-The **volatile-lru** and **volatile-random** policies are mainly useful when you want to use a single instance for both caching and to have a set of persistent keys. However it is usually a better idea to run two Redis instances to solve such a problem.
+## 캐시 교체 프로세스
 
-It is also worth to note that setting an expire to a key costs memory, so using a policy like **allkeys-lru** is more memory efficient since there is no need to set an expire for the key to be evicted under memory pressure.
+캐시 대상 교체 프로세스는 아래와 같이 동작한다. 
 
-How the eviction process works
----
+- 클라이언트에서 추가 메모리를 요구하는 명령을 실행한다.
+- Redis에서는 메모리 사용량을 확인하고 maxmemory보다 큰 메모리가 필요할 경우, 캐시 교체정책에 따라서 캐시 제거를 수행한다. 
+- 캐시 제거 이후 새로운 명령을 수행하고, 제거된 위치에 새롭게 캐싱하여 캐시 교체 프로세스를 완료한다. 
 
-It is important to understand that the eviction process works like this:
+캐시 교체 프로세스는, 메모리 제한 초과 -> 메모리 비우기 -> 새 명령 실행을 통해 메모리 증가로 단순화 할 수 있다. 이러한 과정이 반복 되던중, 매우 큰 메모리를 요구하는 명령이 들어올 경우 메모리 제한보다 훨씬 많은 메모리를 사용하는 상황이 나올 가능성도 있다.
 
-* A client runs a new command, resulting in more data added.
-* Redis checks the memory usage, and if it is greater than the `maxmemory` limit , it evicts keys according to the policy.
-* A new command is executed, and so forth.
+## 근사 LRU 알고리즘
 
-So we continuously cross the boundaries of the memory limit, by going over it, and then by evicting keys to return back under the limits.
+Redis의 LRU 알고리즘은 정확하게 LRU를 구현한 것이 아니다. 정확하게 LRU 알고리즘에 따른 최서느이 선택을 하지 않고, 몇몇의 키를 샘플링하여 샘플링 한 키들 중에서 접근이 가장 오래된 키를 선택하여, LRU와 유사하게 동작하도록 구현하였다. Redis 3.0부터는 풀 개념을 도입하여 알고리즘을 정확성을 높였다. 원하는 경우 샘플링할 키의 갯수를 조절하여 LRU 알고리즘을 튜닝할 수 있다. 해당 옵션은 `maxmemory-samples 5`의 명령을 통해 조절 가능하다. 
 
-If a command results in a lot of memory being used (like a big set intersection stored into a new key) for some time the memory limit can be surpassed by a noticeable amount.
+정확한 LRU 알고리즘을 구현할 경우 모든 키에 대한 LRU 리스트를 유지하는데에 많은 메모리가 소모되므로, 근사 LRU 기법을 사용한 것이다. 아래의 그림은 각 LRU 알고리즘별 캐시 상황을 보여준다. 
 
-Approximated LRU algorithm
----
+![LRU 알고리즘 비교](http://redis.io/images/redisdoc/lru_comparison.png)
 
-Redis LRU algorithm is not an exact implementation. This means that Redis is
-not able to pick the *best candidate* for eviction, that is, the access that
-was accessed the most in the past. Instead it will try to run an approximation
-of the LRU algorithm, by sampling a small number of keys, and evicting the
-one that is the best (with the oldest access time) among the sampled keys.
+위의 그래프는 Redis server 주어진 키 갯수만큼의 데이터 입력을 통해 생성하였다. 키 접근은 첫 키부터 마지막 키까지 순차적으로 접근하였으므로, 처음 접근한 키가 LRU의 최선 선택지라고 확신할 수 있다. 이후 기존 데이터베이스 크기의 50% 만큼의 키를 추가 하여, 기존 데이터베이스의 50%가 완전히 오래된 키로 선정될 수 있도록 하였다. 그래프를 통해서 3개의 영역으로 분리하는 3종류의 점들을 확인할 수 있다.
 
-However since Redis 3.0 the algorithm was improved to also take a pool of good
-candidates for eviction. This improved the performance of the algorithm, making
-it able to approximate more closely the behavior of a real LRU algorithm.
+- 밝은 회색은 기존 데이터베이스의 교체 대상이다
+- 어두운 회색은 기존 데이터베이스이지만 교체 대상이 아니다
+- 초록색은 새롭게 추가된 키 데이터베이스이다
 
-What is important about the Redis LRU algorithm is that you **are able to tune** the precision of the algorithm by changing the number of samples to check for every eviction. This parameter is controlled by the following configuration directive:
+이론적인 LRU 구현을 할 경우 명확하게 분리가 되는걸을 알 수 있다. Redis 3.0의 경우 5개의 키를 샘플링만 해도 2.8 버전보다 나은 성능을 보여주지만, 새롭게 추가된 키에대해서는 비슷한 결과를 나타냄을 알 수 있다. 샘플링 키를 10개로 늘릴경우 이론적인 LRU에 거의 근접한 결과를 보여주는 것을 알 수 있다. 
 
-    maxmemory-samples 5
+LRU 알고리즘은 향후 데이터 접근 패턴이 어떻게 될것인지를 예측하는 방식이다. 위의 그래프에서 볼 수 있듯이 자주 접근되는 데이터들은 근사 LRU를 사용하더라도 캐시 내에 매우 잘 유지가 됨을 알 수 있다. 
 
-The reason why Redis does not use a true LRU implementation is because it
-costs more memory. However the approximation is virtually equivalent for the
-application using Redis. The following is a graphical comparison of how
-the LRU approximation used by Redis compares with true LRU.
+## LFU 정책
 
-![LRU comparison](http://redis.io/images/redisdoc/lru_comparison.png)
+Redis 4.0부터 LFU (Least Frequently Used eviction mode)를 사용할 수 있다. 이 모드는 특정 상황에서 더 좋은 성능을 나타낼 수 있는데, 이는 각 item에 대한 접근 빈도를 추적하여 덜 접근 되는 데이터를 교체 대상으로 선정하는 특징을 지닌다. 
 
-The test to generate the above graphs filled a Redis server with a given number of keys. The keys were accessed from the first to the last, so that the first keys are the best candidates for eviction using an LRU algorithm. Later more 50% of keys are added, in order to force half of the old keys to be evicted.
+LRU를 사용할때에 최근에 접근된 데이터 이지만 이전까지 전혀 접근이 없었던 데이터라면, 계속해서 캐시메모리에 남겨두는 것이 적절하지 않을 수 있다. LFU는 이러한 상황을 방지하는 알고리즘이 될 수 있다. 
 
-You can see three kind of dots in the graphs, forming three distinct bands.
+LFU는 아래의 캐시 정책 선언을 통해 사용할 수 있다.
 
-* The light gray band are objects that were evicted.
-* The gray band are objects that were not evicted.
-* The green band are objects that were added.
+- **volatile-lfu**: expire set에 LFU 알고리즘을 적용한다
+- **allkeys-lfu**: 모든 키에 대한 LFU 알고리즘을 적용한다
 
-In a theoretical LRU implementation we expect that, among the old keys, the first half will be expired. The Redis LRU algorithm will instead only *probabilistically* expire the older keys.
+LFU는 LRU와 마찬가지로 이론적으로 완벽한 구현이 아닌 Morris counter를 통해 근사 LFU를 사용한다. 
 
-As you can see Redis 3.0 does a better job with 5 samples compared to Redis 2.8, however most objects that are among the latest accessed are still retained by Redis 2.8. Using a sample size of 10 in Redis 3.0 the approximation is very close to the theoretical performance of Redis 3.0.
-
-Note that LRU is just a model to predict how likely a given key will be accessed in the future. Moreover, if your data access pattern closely
-resembles the power law, most of the accesses will be in the set of keys that
-the LRU approximated algorithm will be able to handle well.
-
-In simulations we found that using a power law access pattern, the difference between true LRU and Redis approximation were minimal or non-existent.
-
-However you can raise the sample size to 10 at the cost of some additional CPU
-usage in order to closely approximate true LRU, and check if this makes a
-difference in your cache misses rate.
-
-To experiment in production with different values for the sample size by using
-the `CONFIG SET maxmemory-samples <count>` command, is very simple.
-
-The new LFU mode
----
-
-Starting with Redis 4.0, a new [Least Frequently Used eviction mode](http://antirez.com/news/109) is available. This mode may work better (provide a better
-hits/misses ratio) in certain cases, since using LFU Redis will try to track
-the frequency of access of items, so that the ones used rarely are evicted while
-the one used often have an higher chance of remaining in memory.
-
-If you think at LRU, an item that was recently accessed but is actually almost never requested, will not get expired, so the risk is to evict a key that has an higher chance to be requested in the future. LFU does not have this problem, and in general should adapt better to different access patterns.
-
-To configure the LFU mode, the following policies are available:
-
-* `volatile-lfu` Evict using approximated LFU among the keys with an expire set.
-* `allkeys-lfu` Evict any key using approximated LFU.
-
-LFU is approximated like LRU: it uses a probabilistic counter, called a [Morris counter](https://en.wikipedia.org/wiki/Approximate_counting_algorithm) in order to estimate the object access frequency using just a few bits per object, combined with a decay period so that the counter is reduced over time: at some point we no longer want to consider keys as frequently accessed, even if they were in the past, so that the algorithm can adapt to a shift in the access pattern.
-
-Those informations are sampled similarly to what happens for LRU (as explained in the previous section of this documentation) in order to select a candidate for eviction.
-
-However unlike LRU, LFU has certain tunable parameters: for instance, how fast
-should a frequent item lower in rank if it gets no longer accessed? It is also possible to tune the Morris counters range in order to better adapt the algorithm to specific use cases.
-
-By default Redis 4.0 is configured to:
-
-* Saturate the counter at, around, one million requests.
-* Decay the counter every one minute.
-
-Those should be reasonable values and were tested experimental, but the user may want to play with these configuration settings in order to pick optimal values.
-
-Instructions about how to tune these parameters can be found inside the example `redis.conf` file in the source distribution, but briefly, they are:
+카운트크기와 초기화 단위는 redis.conf 파일에 아래의 옵션 선언을 통해 조절할 수 있다.
 
 ```
 lfu-log-factor 10
 lfu-decay-time 1
 ```
 
-The decay time is the obvious one, it is the amount of minutes a counter should be decayed, when sampled and found to be older than that value. A special value of `0` means: always decay the counter every time is scanned, and is rarely useful.
-
-The counter *logarithm factor* changes how many hits are needed in order to saturate the frequency counter, which is just in the range 0-255. The higher the factor, the more accesses are needed in order to reach the maximum. The lower the factor, the better is the resolution of the counter for low accesses, according to the following table:
-
-```
-+--------+------------+------------+------------+------------+------------+
-| factor | 100 hits   | 1000 hits  | 100K hits  | 1M hits    | 10M hits   |
-+--------+------------+------------+------------+------------+------------+
-| 0      | 104        | 255        | 255        | 255        | 255        |
-+--------+------------+------------+------------+------------+------------+
-| 1      | 18         | 49         | 255        | 255        | 255        |
-+--------+------------+------------+------------+------------+------------+
-| 10     | 10         | 18         | 142        | 255        | 255        |
-+--------+------------+------------+------------+------------+------------+
-| 100    | 8          | 11         | 49         | 143        | 255        |
-+--------+------------+------------+------------+------------+------------+
-```
-
-So basically the factor is a trade off between better distinguishing items with low accesses VS distinguishing items with high accesses. More informations are available in the example `redis.conf` file self documenting comments.
-
-Since LFU is a new feature, we'll appreciate any feedback about how it performs in your use case compared to LRU.
