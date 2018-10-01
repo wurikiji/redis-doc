@@ -1,119 +1,106 @@
-Partitioning: how to split data among multiple Redis instances.
-===
+# Partitioning: how to split data among multiple Redis instances
 
-Partitioning is the process of splitting your data into multiple Redis instances, so that every instance will only contain a subset of your keys. The first part of this document will introduce you to the concept of partitioning, the second part will show you the alternatives for Redis partitioning.
+> [원본](https://redis.io/topics/partitioning), [번역저장소](https://github.com/wurikiji/redis-doc)
 
-Why partitioning is useful
----
+파티셔닝은 다수의 레디스 인스턴스가 존재할 때 데이터를 여러곳으로 분산 시키는 기술로, 각 레디스 인스턴스는 전체 키 중 일부인 자신에게 할당된 파티션의 키들만 관리하게 된다. 본 문서에서는 파티셔닝의 기본적인 컨셉 소개부터 레디스에서 파티셔닝을 하는 방법까지 다룬다. 
 
-Partitioning in Redis serves two main goals:
+### 파티셔닝이 유용한 이유
 
-* It allows for much larger databases, using the sum of the memory of many computers. Without partitioning you are limited to the amount of memory a single computer can support.
-* It allows scaling the computational power to multiple cores and multiple computers, and the network bandwidth to multiple computers and network adapters.
+레디스에서 파티셔닝을 사용하는 데에는 두가지 이유가 있다. 
 
-Partitioning basics
----
+- 초 대용량의 데이터베이스를 다수의 컴퓨터 메모리 상에서 관리 할 수 있다. 파티셔닝을 사용하지 않을 경우 단일 서버 노드 한대의 메모리와 저장공간 용량 만큼만 데이터베이스를 관리할 수 있다. 
+- 파티셔닝을 통해 다수의 컴퓨터 파워, CPU 코어, 네트워크 대역폭, 네트워크 어댑터 등을 효율적으로 활용하여 그 성능을 확장할 수 있다. 
 
-There are different partitioning criteria. Imagine we have four Redis instances **R0**, **R1**, **R2**, **R3**, and many keys representing users like `user:1`, `user:2`, ... and so forth, we can find different ways to select in which instance we store a given key. In other words there are *different systems to map* a given key to a given Redis server.
+### 파티셔닝 기초
 
-One of the simplest ways to perform partitioning is with **range partitioning**, and is accomplished by mapping ranges of objects into specific Redis instances. For example, I could say users from ID 0 to ID 10000 will go into instance **R0**, while users form ID 10001 to ID 20000 will go into instance **R1** and so forth.
+파티셔닝 방법에는 여러가지가 있을 수 있다. 레디스 인스턴스가 **R0, R1, R2, R3**의 4개가 존재하고, **user:1, user:2** 처럼 사용자를 표현하는 키가 매우 많이 존재한다고 가정할때, 각각의 레디스 인스턴스가 어떤 키를 저장하고 관리할 지 정하는 방법에는 여러가지가 있다. 간단히 말해서, 주어진 키값에 대해서 어느 레디스 서버에 저장할 지 정하는 매핑 기법이 여러개가 있을 수 있다는 말이다. 
 
-This system works and is actually used in practice, however, it has the disadvantage of requiring a table that maps ranges to instances. This table needs to be managed and a table is needed for every kind of object, so therefore range partitioning in Redis is often undesirable because it is much more inefficient than other alternative partitioning approaches.
+가장 간단한 파티셔닝 방법은 범위별로 키값을 구분하는 것이다. 예를 들어, 사용자 아이디 0 부터 10000 까지는 **R0**로, 10001 부터 20000 까지는 **R1**으로 보내는 등의 간단한 매핑 기법이다. 
 
-An alternative to range partitioning is **hash partitioning**. This scheme works with any key, without requiring a key in the form `object_name:<id>`, and is as simple as:
+이러한 단순 범위 매핑 기법은 실제로 사용되는 기법이긴 하지만, 각 키 범위가 어느 인스턴스로 가야하는지 관리하기 위한 매핑 테이블이 필요한 단점이 있다. 서로 다른 오브젝트 (테이블 등) 이 여러개일 경우에는 각 오브젝트 별로 매핑 테이블이 추가로 필요하기 때문에 컴퓨터 파워 및 성능에 좋지 않은 영향을 미치게 된다. 
 
-* Take the key name and use a hash function (e.g., the `crc32` hash function) to turn it into a number. For example, if the key is `foobar`, `crc32(foobar)` will output something like `93024922`.
-* Use a modulo operation with this number in order to turn it into a number between 0 and 3, so that this number can be mapped to one of my four Redis instances. `93024922 modulo 4` equals `2`, so I know my key `foobar` should be stored into the **R2** instance. *Note: the modulo operation returns the remainder from a division operation, and is implemented with the `%` operator in many programming languages.*
+키 범위 파티셔닝의 대체 기법으로는 **Hash (해시)** 파티셔닝이 있다. 해시 파티셔닝은 어떤 종류의 키인지 무관하게 동작한다. 
 
-There are many other ways to perform partitioning, but with these two examples you should get the idea. One advanced form of hash partitioning is called **consistent hashing** and is implemented by a few Redis clients and proxies.
+- 해시 함수를 통하여 key에 대한 해시 값을 찾아낸다. 예를 들어, foobar를 crc32 해시함수에 적용할 경우 93024922와 같은 해시 값이 추출된다. 
+- 인스턴스 갯수에 맞게 모듈러(modulo, c에서는 %) 연산을 적용하여 0에서 3사이의 인스턴스 번호를 추출하고, 해당 인스턴스에 저장하고 관리하도록 한다. 
 
-Different implementations of partitioning
----
+이 외에도 다양한 파티셔닝 기법이 존재하지만, 위의 두가지 예제면 파티셔닝의 기초를 이해하기에는 충분하다고 생각한다. 발전된 해시 파티셔닝 기법중 하나인 **consistent hashing** 기법의 경우 몇몇 레디스 클라이언트와 프록시들에 의해서 사용되고 있다. 
 
-Partitioning can be the responsibility of different parts of a software stack.
+### 파티셔닝의 실제 구현
 
-* **Client side partitioning** means that the clients directly select the right node where to write or read a given key. Many Redis clients implement client side partitioning.
-* **Proxy assisted partitioning** means that our clients send requests to a proxy that is able to speak the Redis protocol, instead of sending requests directly to the right Redis instance. The proxy will make sure to forward our request to the right Redis instance accordingly to the configured partitioning schema, and will send the replies back to the client. The Redis and Memcached proxy [Twemproxy](https://github.com/twitter/twemproxy) implements proxy assisted partitioning.
-* **Query routing** means that you can send your query to a random instance, and the instance will make sure to forward your query to the right node. Redis Cluster implements an hybrid form of query routing, with the help of the client (the request is not directly forwarded from a Redis instance to another, but the client gets *redirected* to the right node).
+파티셔닝은 서로 다른 소프트웨어 스택에서 담당할 수 있다. 
 
-Disadvantages of partitioning
----
+- **클라이언트 기반의 파티셔닝**은 레디스 서버로 전송하기 전에, 클라이언트가 직접 키값에 따른 레디스 서버 노드를 선택하는 것이다. 많은 레디스 클라이언트 들이 이 방식을 택하고 있다. 
+- **프록시를 이용한 파티셔닝**은 클라이언트에서 곧바로 레디스 서버를 지정하지 않고 프록시 서버로 레디스 커맨드를 전송하면, 프록시 서버가 적절히 나누어서 다수의 레디스 서버로 분산 시켜주는 것이다. 각 키에 따른 정확한 레디스 서버를 찾는 것은 전적으로 프록시 서버의 책임이며, 레디스 서버와 통신 후 적절한 응답을 클라이언트로 전송한다. 레디스와 Memcached의 프록시 서버인 [Twemproxy](https://github.com/twitter/twemproxy)가 프록시 기반의 파티셔닝을 제공한다. 
+- **쿼리 라우팅 기술**은 일단 쿼리를 무작위의 인스턴스로 보내고, 각 인스턴스가 적절한 레디스 인스턴스를 찾아내서 담당하는 것이다. Redis Cluster가 이러한 방식을 이용한 하이브리드 형태의 쿼리 라우팅 기술을 구현하였다. 레디스 클러스터 서버가 직접 쿼리를 재전송 해주지는 않고, 요청된 명령에 해당되는 레디스 인스턴스를 찾아서 클라이언트로 알려주면, 클라이언트가 다시 해당 인스턴스로 명령을 보내는 방식이다. 
 
-Some features of Redis don't play very well with partitioning:
+### 파티셔닝의 단점
 
-* Operations involving multiple keys are usually not supported. For instance you can't perform the intersection between two sets if they are stored in keys that are mapped to different Redis instances (actually there are ways to do this, but not directly).
-* Redis transactions involving multiple keys can not be used.
-* The partitioning granularity is the key, so it is not possible to shard a dataset with a single huge key like a very big sorted set.
-* When partitioning is used, data handling is more complex, for instance you have to handle multiple RDB / AOF files, and to make a backup of your data you need to aggregate the persistence files from multiple instances and hosts.
-* Adding and removing capacity can be complex. For instance Redis Cluster supports mostly transparent rebalancing of data with the ability to add and remove nodes at runtime, but other systems like client side partitioning and proxies don't support this feature. However a technique called *Pre-sharding* helps in this regard.
+레디스의 일부 기능들은 파티셔닝을 할 경우 제대로 동작하지 않을 수 있다. 
 
-Data store or cache?
----
+- 다중 키에 대한 동작들은 대부분 지원되지 않는다. 서로 다른 레디스 인스턴스에 저장된 키 범위가 포함된 데이터 인터섹션은 레디스에서 직접 지원하지 않고, 클라이언트가 직접 구현해야 한다. 
+- 다중 키에 대한 동작이 포함된 트랜잭션은 지원하지 않는다. 
+- 파티셔닝 단위가 키 값 이므로, 매우 큰 키 (정렬된 셋)에 대한 파티셔닝은 불가능하다. 
+- 파티셔닝이 사용될 경우 다중의 RDB 혹은 AOF 데이터베이스 파일을 관리해야 하고, 다수의 인스턴스들이 관리하는 파일들에 대한 백업이 필요하는 등, 데이터 관리 작업이 복잡해진다. 
+- 컴퓨팅 파워를 추가하거나 감소시키는 작업에 더 많은 비용이 들어가고 복잡해진다. 레디스 클러스트의 경우에는 런타임시에 transparent한 노드 추가/감소 기능을 제공하지만, 클라이언트 기반의 파티셔닝이나 프록시 기반의 파티셔닝의 경우 이러한 기능을 제공하기 매우 어렵다. 필요한 경우에는 *[Pre-sharding](#Presharding)* 기법을 이용해서 구현할 수도 있다. 
 
-Although partitioning in Redis is conceptually the same whether using Redis as a data store or as a cache, there is a significant limitation when using it as a data store. When Redis is used as a data store, a given key must always map to the same Redis instance. When Redis is used as a cache, if a given node is unavailable it is not a big problem if a different node is used, altering the key-instance map as we wish to improve the *availability* of the system (that is, the ability of the system to reply to our queries).
+### 데이터 스토어로 사용할 것인가 캐시로 사용할 것인가
 
-Consistent hashing implementations are often able to switch to other nodes if the preferred node for a given key is not available. Similarly if you add a new node, part of the new keys will start to be stored on the new node.
+파티셔닝 그 자체는 레디스를 데이터 스토어로 사용하든 캐시로 사용하든 기술에는 상관이 없지만, 데이터 스토어로 사용할때는 큰 제약조건이 있다. 데이터 스토어로 사용할 때에는 같은 키값에 대해서 항상 같은 레디스 인스턴스에 할당 되어야 정확한 키 값을 관리할수 있다. 레디스를 캐시로 사용할 때에는 해당 노드에 키값이 없더라도 다른 노드에서 관리하고 있으므로 상관이 없고, 클라이언트 요청에 대한 응답을 어떤 방식으로 어느 인스턴스에서 처리할지에 대한 루틴을 자유롭게 조절할 수 있다. 
 
-The main concept here is the following:
+Consistent hashing으로 구현할 경우에는 주어진 키값에 대한 우선적인 노드에 데이터가 존재 하지 않을 경우 다른 노드에서 처리할 수 있도록 한다. 새로운 노드가 추가 될 경우 새로운 키들이 추가된 노드에서 관리될 수 있도록 하기도 한다. 
 
-* If Redis is used as a cache **scaling up and down** using consistent hashing is easy.
-* If Redis is used as a store, **a fixed keys-to-nodes map is used, so the number of nodes must be fixed and cannot vary**. Otherwise, a system is needed that is able to rebalance keys between nodes when nodes are added or removed, and currently only Redis Cluster is able to do this - Redis Cluster is generally available and production-ready as of [April 1st, 2015](https://groups.google.com/d/msg/redis-db/dO0bFyD_THQ/Uoo2GjIx6qgJ).
+레디스에서 파티셔닝을 할때에 주의 깊게 생각해야 하는 사항을 정리하면 아래와 같다. 
 
-Presharding
----
+- 레디스를 캐시형태로 사용할 경우 consistent hashing을 통해 확장하는 것이 편리하다.
+- 레디스를 데이터 스토어로 사용하는 경우, 항상 고정된 값을 도출해 내는 키-노드 매핑 테이블이 필요하고, 이로 인해 노드 갯수의 증감이 매우 어렵다. 새로운 노드를 추가 하거나 기존 노드를 제거할 때는 모든 매핑 테이블을 재정리 하는 기술이 필요하게 되고, 이는 레디스 클러스터에서만 제공하는 기술이다. 
 
-We learned that a problem with partitioning is that, unless we are using Redis as a cache, to add and remove nodes can be tricky, and it is much simpler to use a fixed keys-instances map.
+### Presharding
 
-However the data storage needs may vary over the time. Today I can live with 10 Redis nodes (instances), but tomorrow I may need 50 nodes.
+레디스를 캐시로 사용하는 것이 아니면 새로운 노드를 추가하거나 기존 노드를 제거하는 것은 매우 복잡한 일이 될 수 있고, 키-노드 매핑 테이블을 이용한 파티셔닝 기법을 사용할 수 밖에 없는 문제점이 있음을 살펴보았다. 
 
-Since Redis is extremely small footprint and lightweight (a spare instance uses 1 MB of memory), a simple approach to this problem is to start with a lot of instances since the start. Even if you start with just one server, you can decide to live in a distributed world since your first day, and run multiple Redis instances in your single server, using partitioning.
+그러나 시간이 지날수록 저장공간에 대한 요구가 늘어날 것이고, 10개의 레디스 노드만 있으면 처리할 수 있었던 데이터 들이, 시간이 지난후 50개의 데이터 노드를 필요로 할 수 도 있는 것이다. 
 
-And you can select this number of instances to be quite big since the start. For example, 32 or 64 instances could do the trick for most users, and will provide enough room for growth.
+레디스는 매우 적은 양의 메모리 공간을 사용하므로(인스턴스당 약 1메가바이트), 애초에 시작부터 매우 많은 레디스 인스턴스를 사용하는 것으로 문제에 접근해 볼 수 있다. 하나의 컴퓨팅 노드만을 사용한 데이터베이스 관리를 시작 할 때부터, 하나의 노드에 다수의 레디스 인스턴스를 사용하여 마치 여러대의 레디스 노드가 있는것과 같은 분산 환경에서 동작하는 것처럼 설계하여 파티셔닝 기법을 이용하는 것이다. 
 
-In this way as your data storage needs increase and you need more Redis servers, what to do is to simply move instances from one server to another. Once you add the first additional server, you will need to move half of the Redis instances from the first server to the second, and so forth.
+미래의 요구 사항을 고려하여 첫 데이터 관리 시작시 32개나 64개의 레디스 인스턴스를 단일 노드에서 사용하는 방식을 사용하면 충분할 수 있다.
 
-Using Redis replication you will likely be able to do the move with minimal or no downtime for your users:
+이를 통해 향후에 새로운 노드를 추가하더라도 인스턴스 일부를 이동시키는 방식으로 기존의 파티셔닝을 사용할 수 있다. 한 노드를 추가 할 경우 절반을 이동하면 되고, 두개의 노드를 추가할 경우 1/3을 이동하면 된다. 이러한 쉬운 방식으로 향후 있을 수 있는 노드 확장을 미리 설계하고 사용할 수 있다.
 
-* Start empty instances in your new server.
-* Move data configuring these new instances as slaves for your source instances.
-* Stop your clients.
-* Update the configuration of the moved instances with the new server IP address.
-* Send the `SLAVEOF NO ONE` command to the slaves in the new server.
-* Restart your clients with the new updated configuration.
-* Finally shut down the no longer used instances in the old server.
+확장시에 필요한 데이터 이동은 레디스의 레플리케이션 기능을 이용하면 레디스 서버의 셧다운 없이 바로 사용할 수 있다. 
 
-Implementations of Redis partitioning
-===
+- 새로운 서버에서 새로운 레디스 인스턴스를 시작한다. 
+- 새로운 인스턴스를 slave 노드로 설정하고 데이터를 이동한다.
+- 클라이언트 요청을 잠시 중단한다. 
+- 새로운 서버로 이동된 레디스 인스턴스에 대한 IP 설정 등을 다시 한다. 
+- `SLAVEOF NO ONE` 커맨드를 새로운 서버로 전송한다. 
+- 업데이트된 설정과 함께 클라이언트를 다시 실행한다. 
+- 기존 서버에서 더 이상 사용하지 않는 레디스 인스턴스를 중지한다. 
 
-So far we covered Redis partitioning in theory, but what about practice? What system should you use?
+## 레디스 파티셔닝 구현방법
 
-Redis Cluster
----
+위의 내용들을 통해 이론적으로 파티셔닝 기법에 대해서 알아보았다. 그렇다면 실전에서는 어떻게 어떤 시스템을 사용해야 할까?
 
-Redis Cluster is the preferred way to get automatic sharding and high availability.
-It is generally available and production-ready as of [April 1st, 2015](https://groups.google.com/d/msg/redis-db/dO0bFyD_THQ/Uoo2GjIx6qgJ).
-You can get more information about Redis Cluster in the [Cluster tutorial](/topics/cluster-tutorial).
+### Redis Cluster (레디스 클러스터)
 
-Once Redis Cluster will be available, and if a Redis Cluster compliant client is available for your language, Redis Cluster will be the de facto standard for Redis partitioning.
+자동적인 샤딩과 높은 사용성을 위해서는 주로 레디스 클러스터를 사용한다. 2015년 4월 1일부터 프로덕션 레벨에서 사용가능하게 되었으며 [클러스 튜토리얼](https://redis.io/topics/cluster-tutorial)에서 사용법을 자세히 볼 수 있다. 사용하고자 하는 프로그래밍 언어에서 레디스 클러스터에 대응되는 클라이언트를 제공할 경우 레디스 클러스터를 사용하는 것이 실질적이고 표준적인 레디스 파티셔닝 사용법이 될 것이다. 
 
-Redis Cluster is a mix between *query routing* and *client side partitioning*.
+참고로, 레디스 클러스터는 *쿼리 라우팅*과 *클라이언트 기반*의 파티셔닝 기법을 조합하여 사용한다. 
 
-Twemproxy
----
+### Twemproxy
 
-[Twemproxy is a proxy developed at Twitter](https://github.com/twitter/twemproxy) for the Memcached ASCII and the Redis protocol. It is single threaded, it is written in C, and is extremely fast. It is open source software released under the terms of the Apache 2.0 license.
+[Twemproxy](https://github.com/twitter/twemproxy)는 트위터에서 Memcached ASCII와 레디스 프로토콜을 위해 개발한 프록시 서버이다. C로 구현되어 있으며 단일 쓰레드로 동작하고 매우 빠른 성능을 가지고 있다. 아파치 2.0 라이센스를 통해 오픈 소스로 공개되어 있다.
 
-Twemproxy supports automatic partitioning among multiple Redis instances, with optional node ejection if a node is not available (this will change the keys-instances map, so you should use this feature only if you are using Redis as a cache).
+Twemproxy는 다수의 레디스 인스턴스들에 대한 자동 파티셔닝을 지원하며, 사용 불가능한 노드가 발생할 경우 노드를 제거하는 기술도 지원한다. (파티셔닝을 키-노드 매핑을 통해 지원하므로, 레디스 캐시를 사용할 때에만 노드 제거를 사용해야 한다)
 
-It is *not* a single point of failure since you can start multiple proxies and instruct your clients to connect to the first that accepts the connection.
+한번에 여러개의 프록시 서버를 띄워두고 클라이언트 들은 응답이 있는 프록시에 요청 하도록 하면 단일 서버 장애로 인한 레디스 전체 서비스 중단을 피할 수 있다.
 
-Basically Twemproxy is an intermediate layer between clients and Redis instances, that will reliably handle partitioning for us with minimal additional complexities.
+기본적으로 Twemproxy는 레디스 서버와 클라이언트 사이에서 동작하는 것이므로, 추가적인 설정 복잡성이 없이 원하는 파티셔닝 기술을 확실하게 지원할 수 있다. 
 
-You can read more about Twemproxy [in this antirez blog post](http://antirez.com/news/44).
+Twemproxy에 대한 자세한 내용은 [이 블로그 포스트](http://antirez.com/news/44)를 참조하기 바란다. 
 
-Clients supporting consistent hashing
----
+### 클라이언트에서 제공하는 consistent hashing
 
-An alternative to Twemproxy is to use a client that implements client side partitioning via consistent hashing or other similar algorithms. There are multiple Redis clients with support for consistent hashing, notably [Redis-rb](https://github.com/redis/redis-rb) and [Predis](https://github.com/nrk/predis).
+Twemproxy 대신에 사용할 수 있는 방법은 클라이언트 기반의 파티셔닝을 consistent hashing 기법이나 비슷한 다른 알고리즘을 사용해 제공하는 클라이언트를 사용하는 것이다. [Redis-rb](https://github.com/redis/redis-rb)나 [Predis](https://github.com/nrk/predis)와 같은 대체 클라이언트 들이 존재한다. 
 
-Please check the [full list of Redis clients](http://redis.io/clients) to check if there is a mature client with consistent hashing implementation for your language.
+[레디스 클라이언트 목록](http://redis.io/clients)을 확인하면 원하는 프로그래밍 언어에 대한 클라이언트들이 무엇이 있는지 파악 할 수 있다. 
