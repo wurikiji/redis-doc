@@ -3,6 +3,7 @@
 본 레포는 redis 문서의 한글화를 위한 레포 입니다. 
 This repository keeps the translation of the original redis documents. 
 - [lru-cache.md](topics/lru-cache.md)
+- [partitioning.md](topics/partitioning.md)
 
 ## Clients
 
