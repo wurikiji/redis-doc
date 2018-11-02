@@ -1,214 +1,104 @@
-Redis cluster tutorial
-===
+# Redis Cluster Turorial
 
-This document is a gentle introduction to Redis Cluster, that does not use
-complex to understand distributed systems concepts. It provides instructions
-about how to setup a cluster, test, and operate it, without
-going into the details that are covered in
-the [Redis Cluster specification](/topics/cluster-spec) but just describing
-how the system behaves from the point of view of the user.
+본 문서에서는 레디스 클러스터에 대해 가볍게 다룬다. 분산시스템에 대한 복잡한 내용은 다루지 않는다. 레디스 클러스터를 셋업하고 테스트하고 동작하는 방법을 다루며, 유저 입장에서 전체 시스템이 어떻게 연계되어있는지에 대해 간략히 설명한다. 클러스터 시스템의 자세한 내용은 [Redis Cluster Specification](https://redis.io/topics/cluster-spec)에서 알아보도록 하자. 
 
-However this tutorial tries to provide information about the availability
-and consistency characteristics of Redis Cluster from the point of view
-of the final user, stated in a simple to understand way.
+레디스 클러스터의 가용성 (availability)과 일관성 (consistency) 특징에 대해서는 최종 유저 입장에서 간단한 방식을 통해 기술한다.
 
-Note this tutorial requires Redis version 3.0 or higher.
+단, 본 문서에서 다루는 내용은 레디스 3.0 이상의 버전을 대상으로 함을 명심해야 한다.
 
-If you plan to run a serious Redis Cluster deployment, the
-more formal specification is a suggested reading, even if not
-strictly required. However it is a good idea to start from this document,
-play with Redis Cluster some time, and only later read the specification.
+실제 프로덕트에 레디스 클러스터를 사용하고자 할 경우에는, Redis Cluster Specification을 읽어보길 권장한다. 그 외의 경우에는 본 문서에 따라서 레디스 클러스터에 익숙해지고, 몇번 테스트 가동을 해본 뒤에 스펙 문서를 읽어도 늦지 않다.
 
-Redis Cluster 101
----
+### Redis Cluster 101
 
-Redis Cluster provides a way to run a Redis installation where data is
-**automatically sharded across multiple Redis nodes**.
+레디스 클러스터는 **데이터들이 여러개의 레디스 노드로 자동적으로 분산**되도록 하는 레디스 서버 설치를 제공한다. 또한, 데이터를 파티셔닝 하는 동안 몇가지 설정을 통해 **다양한 단계의 가용성 레벨을 제공**하고 있다. 여기서 말하는 가용성이란 실질 사용상황에서 어떤 노드들이 통신 가동/통신이 불가능한 상황이 될 경우에도, 지속적으로 레디스 서버를 사용할 수 있도록 하는 기능적인 측면을 말한다. 그러나, 일부의 기능적 문제가 아닌 대다수의 마스터 노드가 사용 불가능 상태로 빠질경우에는 수동 복구를 진행해야 한다.
 
-Redis Cluster also provides **some degree of availability during partitions**,
-that is in practical terms the ability to continue the operations when
-some nodes fail or are not able to communicate. However the cluster stops
-to operate in the event of larger failures (for example when the majority of
-masters are unavailable).
+레디스 클러스터 사용을 통해 얻을 수 있는 실질적인 이득을 정리하자면 아래와 같다.
 
-So in practical terms, what you get with Redis Cluster?
+- **다수의 노드로 데이터 셋을 자동적으로 분산 시킬 수 있음**
+- **일부의 노드가 동작 불능 상태일 때도 지속적으로 서버를 유지할 수 잇는 가용성을 제공**
 
-* The ability to **automatically split your dataset among multiple nodes**.
-* The ability to **continue operations when a subset of the nodes are experiencing failures** or are unable to communicate with the rest of the cluster.
+### 레디스 클러스터 TCP 포트
 
-Redis Cluster TCP ports
----
+모든 레디스 클러스터 노드는 두개의 TCP 연결을 유지한다. 하나는 클라이언트와의 연결을 위한 일반적은 레디스 서버 TCP 포트 이고 (기본값: 6379), 하나는 클러스터 유지를 위한 포트 이다. (기본값: 데이터 포트 + 10000 = 16379)
 
-Every Redis Cluster node requires two TCP connections open. The normal Redis
-TCP port used to serve clients, for example 6379, plus the port obtained by
-adding 10000 to the data port, so 16379 in the example.
+두번째로 열리는 포트의 경우 클러스터 유지를 위한 클러스터 버스로, 바이너리 프로토콜을 통해 노드간의 통신을 수행하는 채널이다. 클러스터 버스는 고장 감지 (failure detection), 설정 갱신, 장애 극복 프로토콜 승인 및 다양한 작업을 수행하는데 사용이 된다. 클라이언트에서는 절대로 클러스터 버스를 사용하면 안되고, 일반 포트를 사용해야 한다. 단, 시스템의 방화벽상에는 데이터 포트 및 클러스터 버스 포트를 모두 허용으로 추가해야만 레디스 클러스터가 정상적으로 동작한다. 
 
-This second *high* port is used for the Cluster bus, that is a node-to-node
-communication channel using a binary protocol. The Cluster bus is used by
-nodes for failure detection, configuration update, failover authorization
-and so forth. Clients should never try to communicate with the cluster bus
-port, but always with the normal Redis command port, however make sure you
-open both ports in your firewall, otherwise Redis cluster nodes will be
-not able to communicate.
+클라이언트를 위한 데이터/커맨드 포트와 클러스터 버스 포트의 번호는 항상 10000의 차이를 갖도록 고정이 되어 있다.
 
-The command port and cluster bus port offset is fixed and is always 10000.
+레디스 클러스터가 정상적으로 동작하기 위해서는 각 노드별로 아래의 조건을 충족해야 한다.
 
-Note that for a Redis Cluster to work properly you need, for each node:
+1. 일반적인 클라이언트 통신 포트 (기본 6379)는 모든 클라이언트들이 접근할 수 있어야 하고, 다른 모든 클러스터 노드들에서도 접근이 가능해야 한다. (클러스터 노드끼리 키를 migration 하는 데에 필요하다)
+2. 클러스터 버스 포트 (기본 클라이언트 포트 + 10000)는 다른 모든 클러스터 노드로부터 접근 가능해야 한다.
 
-1. The normal client communication port (usually 6379) used to communicate with clients to be open to all the clients that need to reach the cluster, plus all the other cluster nodes (that use the client port for keys migrations).
-2. The cluster bus port (the client port + 10000) must be reachable from all the other cluster nodes.
+둘 중 하나의 포트라도 연결되지 않을 경우 클러스터가 예상 한데로 동작하지 않을 것이다. 클러스터 버스 포트는 클라이언트 포트와 다르게, 낮은 대역폭과 낮은 프로세싱 타임을 제공하는 바이너리 프로토콜을 통해 데이터 및 정보교환을 수행한다.
 
-If you don't open both TCP ports, your cluster will not work as expected.
+### Docker 환경에서의 레디스 클러스터
 
-The cluster bus uses a different, binary protocol, for node to node data
-exchange, which is more suited to exchange information between nodes using
-little bandwidth and processing time.
+현재 레디스 클러스터 버전은 NAT 시스템이나 IP 주소, TCP 포트 리매핑 시스템을 지원하지 않는다.
 
-Redis Cluster and Docker
----
+Docker의 경우 도커 내부에서 동작하는 프로그램들에 대해 도커 자체적인 포트를 부여하여 다수의 도커 컨테이너를 하나의 포트로 관리하는데 사용하는 port mapping 기술을 사용한다.
 
-Currently Redis Cluster does not support NATted environments and in general
-environments where IP addresses or TCP ports are remapped.
+레디스 클러스터를 도커 내부에서 사용하기 위해서는 도커의 네트워크 모드를 **host networking mode**로 변경해서 직접적인 접근을 할 수 있도록 사용해야 한다. [도커 문서](https://docs.docker.com/engine/userguide/networking/dockernetworks/)에서 `--net=host` 옵션에 대해 참조하길 바란다.
 
-Docker uses a technique called *port mapping*: programs running inside Docker
-containers may be exposed with a different port compared to the one the
-program believes to be using. This is useful in order to run multiple
-containers using the same ports, at the same time, in the same server.
+### 레디스 클러스터의 데이터 샤딩
 
-In order to make Docker compatible with Redis Cluster you need to use
-the **host networking mode** of Docker. Please check the `--net=host` option
-in the [Docker documentation](https://docs.docker.com/engine/userguide/networking/dockernetworks/) for more information.
+레디스 클러스터는 consistent 해싱을 사용하지 않고, 개념적으로 모든 키들을 하나의 **해시 슬롯**의 일부로 고려한 샤딩 기법을 사용한다.
 
-Redis Cluster data sharding
----
+레디스 클러스터는 기본적으로 키들에 대해 16,384개의 해시 슬롯을 유지하며, 주어진 키에 대한 해시 슬롯이 어느 위치인지를 판별한다. 판별하는 방법은 간단하게 키의 CRC16 에 대한 16384의 모듈러를 취한다.
 
-Redis Cluster does not use consistent hashing, but a different form of sharding
-where every key is conceptually part of what we call an **hash slot**.
+레디스 클러스터의 모든 노드들은 각자의 해시 슬롯 파트에 대해 유지 책임이 있다. 예를 들어 3개의 클러스터 노드를 유지할 경우 아래와 같은 설정이 진행된다.
 
-There are 16384 hash slots in Redis Cluster, and to compute what is the hash
-slot of a given key, we simply take the CRC16 of the key modulo
-16384.
+- A 노드는 0부터 5500번 해시 슬롯
+- B 노드는 5501번부터 11000번 해시 슬롯
+- C 노드는 11001 부터 16383번 해시 슬롯
 
-Every node in a Redis Cluster is responsible for a subset of the hash slots,
-so for example you may have a cluster with 3 nodes, where:
+이러한 단순 설정을 통해 새로운 노드를 추가하거나 기존 노드를 삭제할테 설정을 빠르게 바꿀 수 있도록 한다. 새로운 노드 D를 추가하고 싶을 경우 A, B, C 노드로부터 일부의 해시 슬롯을 D로 이관하기만 하면 된다. 노드 A를 삭제하고 싶은 경우에는 A 노드의 해시 슬롯들을 B와 C로 분배하면 된다. 이후 노드 A의 데이터를 삭제하는 작업을 수행한 뒤 모두 삭제 된 경우 클러스터에서 A 노드를 제거하면 된다.
 
-* Node A contains hash slots from 0 to 5500.
-* Node B contains hash slots from 5501 to 11000.
-* Node C contains hash slots from 11001 to 16383.
+해시 슬롯을 이용하여 데이터를 이동 시키는 방법은 전체 레디스 클러스터의 동작을 멈추지 않아도 되는 장점이 있다. 
 
-This allows to add and remove nodes in the cluster easily. For example if
-I want to add a new node D, I need to move some hash slot from nodes A, B, C
-to D. Similarly if I want to remove node A from the cluster I can just
-move the hash slots served by A to B and C. When the node A will be empty
-I can remove it from the cluster completely.
+레디스 클러스터는 multiple key operation을 지원하여 단일 커맨드에 들어 있는 모든 키들에 대해 다 같은 해시 슬롯에 저장되는 기술을 제공한다. 사용자는 *hash tags* 를 사용하여 다 같은 해시 슬롯으로 가도록 강제 할 수 있다.
 
-Because moving hash slots from a node to another does not require to stop
-operations, adding and removing nodes, or changing the percentage of hash
-slots hold by nodes, does not require any downtime.
+해시 태그는 레디스 클러스터 스펙 문서에 작성되어 있다. 기능이 요지는 다수의 키들에 대해 중괄호 {}로 표시한 부분이 공통 부분 문자열일 경우 하나의 커맨드로 다수의 키를 인자로 사용할 수 있도록 하는 것이다. 예를 들어 this{foo}key라는 키와 another{foo}key라는 키가 있을 경우 괄호로 묶은 {foo} 부분이 동일하므로 하나의 같은 슬롯에 저장되어 있음이 보장된다. 이 때에는 {} 안의 값만 해싱이 된다.
 
-Redis Cluster supports multiple key operations as long as all the keys involved
-into a single command execution (or whole transaction, or Lua script
-execution) all belong to the same hash slot. The user can force multiple keys
-to be part of the same hash slot by using a concept called *hash tags*.
+### 레디스 클러스터의 마스터-슬레이브 모델
 
-Hash tags are documented in the Redis Cluster specification, but the gist is
-that if there is a substring between {} brackets in a key, only what is
-inside the string is hashed, so for example `this{foo}key` and `another{foo}key`
-are guaranteed to be in the same hash slot, and can be used together in a
-command with multiple keys as arguments.
+마스터 노드의 일부가 고장이 나거나 통신 불능 상태에 빠질 경우에도 전체 클러스터의 정상적인 동작을 위해, 레디스 클러스터는 마스터-슬레이브 모델도 지원한다. 이를 통해 모든 해시 슬롯에 대해 기본 1부터 N개의 레플리카를 유지할 수 있도록 한다.
 
-Redis Cluster master-slave model
----
+위에서 예시를 들었던 A, B, C 노드로 구성된 클러스터 상황에서 B 노드가 더이상 동작할 수 없는 상황에 빠질 경우 5501번 부터 11000번 까지의 해시 슬롯에 대해 더 이상 레디스 서버를 유지 할 수 없게 된다.
 
-In order to remain available when a subset of master nodes are failing or are
-not able to communicate with the majority of nodes, Redis Cluster uses a
-master-slave model where every hash slot has from 1 (the master itself) to N
-replicas (N-1 additional slaves nodes).
+그러나 각 클러스터 노드를 생성할 때 각 노드에 대한 슬레이브 노드를 추가로 생성한뒤, 레플리케이션을 할 경우 A, B, C 노드 중 어느 노드가 죽더라도 A1, B1, C1으로 정의되는 슬레이브 노드를 통해 죽은 노드를 대체 할 수 있다.
 
-In our example cluster with nodes A, B, C, if node B fails the cluster is not
-able to continue, since we no longer have a way to serve hash slots in the
-range 5501-11000.
+슬레이브 노드가 사용되는 경우 해당 슬레이브 노드를 마스터 노드로 승격 시키며, 이후에 들어오는 모든 노드를 승격된 노드에서 처리하도록 한다. 그러나 마스터-슬레이브 노드가 동시에 고장날 경우에는 레디스 클러스터 서버가 더 이상 동작하지 않게 된다. 
 
-However when the cluster is created (or at a later time) we add a slave
-node to every master, so that the final cluster is composed of A, B, C
-that are masters nodes, and A1, B1, C1 that are slaves nodes, the system is
-able to continue if node B fails.
+### 레디스 클러스터의 일관성 보장 기법
 
-Node B1 replicates B, and B fails, the cluster will promote node B1 as the new
-master and will continue to operate correctly.
+레디스 클러스터의 일관성 보장은 **가장 강력한 최대 일관성**까지는 보장하지 못한다. 이 말은 특정한 상황에서 레디스 클러스터는 사용자의 데이터를 잃어버릴 수도 있음을 의미한다.
 
-However note that if nodes B and B1 fail at the same time Redis Cluster is not
-able to continue to operate.
+레디스 클러스터가 데이터 분실을 할 수 있는 이유 중 첫번째는 레플리케이션을 비동기로 진행하기 때문이다. 비동기 레플리케이션은 아래와 같은 순서로 진행된다.
 
-Redis Cluster consistency guarantees
----
+- 클라이언트가 B 노드에 write 요청을 한다.
+- B 노드는 자기 노드에만 기록하고 곧바로 클라이언트에 OK 신호를 보낸다.
+- 이후에 비동기적으로 B노드의 하위 슬레이브 노드에 해당 write를 replication 한다.
 
-Redis Cluster is not able to guarantee **strong consistency**. In practical
-terms this means that under certain conditions it is possible that Redis
-Cluster will lose writes that were acknowledged by the system to the client.
+위의 순서에서 볼 수 있듯이 마스터 노드에서 슬레이브 노드들의 레플리케이션 응답을 받지 않고 지나간다. 이는 각 레플리케이션에 대해 응답을 기다릴 경우, 매우 높은 비용의 응답속도 지연이 발생하기 때문이다. 이러한 비동기식 레플리케이션을 하는 도중 마스터 노드가 복구 불능 상태로 빠지고, 아직 레플리케이션 데이터를 전달 받지 못한 슬레이브 노드가 마스터 노드로 승격될 경우, 사용자의 데이터를 잃어버리는 상황이 발생한다.
 
-The first reason why Redis Cluster can lose writes is because it uses
-asynchronous replication. This means that during writes the following
-happens:
+이러한 상황은 기존의 데이터베이스 시스템에서 사용자 데이터를 주기적으로 flush 하도록 설정된 환경과 동일하다. 기존 데이터베이스 시스템에서는 사용자가 데이터 쓰기를 요청할 때마다 강제로 디스크 까지 flush 하도록 설정하여 강력한 일관성을 보장하게 할 수 있다. 그러나 이러한 설정을 사용할 경우에는 매우 낮은 데이터베이스 성능을 보임이 명확하게 드러나 있다. 이와 유사하게 레디스 클러스터에서도 동기적 레플리케이션을 할 경우, 느린 성능이 나올 수 있다. 
 
-* Your client writes to the master B.
-* The master B replies OK to your client.
-* The master B propagates the write to its slaves B1, B2 and B3.
+위와 같이 기본적으로 성능과 일관성 보장기법 간에는 trade-off가 있다. 
 
-As you can see B does not wait for an acknowledge from B1, B2, B3 before
-replying to the client, since this would be a prohibitive latency penalty
-for Redis, so if your client writes something, B acknowledges the write,
-but crashes before being able to send the write to its slaves, one of the
-slaves (that did not receive the write) can be promoted to master, losing
-the write forever.
+레디스 클러스터를 사용하는 환경에서 강력한 일관성 기법을 사용하여 동기적 write를 진행하고 싶은 경우에는 [WAIT](https://redis.io/commands/wait) 커맨드를 사용할 수 있다. 이를 통해 기본 커맨드를 사용하는 것보다 강력한 일관성 보장기법을 기대할 수는 있지만, 레플리케이션이 항상 모든 슬레이브에 저장되는게 아니므로, 특정 데이터에 대한 레플리케이션 정보가 전혀 없는 슬레이브 노드가 마스터 노드로 격상 될 경우에는 여전히 데이터 유실이 발생할 수 있다. 
 
-This is **very similar to what happens** with most databases that are
-configured to flush data to disk every second, so it is a scenario you
-are already able to reason about because of past experiences with traditional
-database systems not involving distributed systems. Similarly you can
-improve consistency by forcing the database to flush data on disk before
-replying to the client, but this usually results into prohibitively low
-performance. That would be the equivalent of synchronous replication in
-the case of Redis Cluster.
+레디스 클러스터가 데이터를 유실하는 경우가 한가지 더 존재한다. 클라이언트 노드가 속한 네트워크가, 네트워크 파티셔닝을 통해 소수의 마스터 노드만을 갖는 네트워크 파티션으로 분리되는 경우이다. 
 
-Basically there is a trade-off to take between performance and consistency.
+예제를 통해 알아보자. 각 알파벳은 노드번호를 의미하고 알파벳 뒤에 숫자 번호가 붙은 경우는 슬레이브 노드를 의미한다. 
 
-Redis Cluster has support for synchronous writes when absolutely needed,
-implemented via the `WAIT` command, this makes losing writes a lot less
-likely, however note that Redis Cluster does not implement strong consistency
-even when synchronous replication is used: it is always possible under more
-complex failure scenarios that a slave that was not able to receive the write
-is elected as master.
+A, B, C, A1, B1, C1으로 구성된 3마스터 3슬레이브 구조의 레디스 클러스터 노드 6개가 있고, 클라이언트 Z1이 있다고 가정하자. 네트워크 상의 노드 파티션을 진행한 뒤에 A, C, A1, B1, C1 노드가 한 네트워크 파티션 NA1에 존재하고 B, Z1 이 다른 네트워크 NA2에 존재하게 되었을 때, 아직 네트워크 파티션 이후 두 네트워크 간의 연결이 이루어지 않는 순간이 존재하게 된다. 이 떄에 Z1은 여전히 같은 네트워크 상에 있는 B 마스터 노드에 데이터 write를 요청할 수 있다. 네트워크 파티셔닝 이후 각 네트워크 그룹간에 연결이 매우 빠른 시기에 성공할 경우 전체 클러스터가 정상적으로 동작하게 되겠지만, 파티션 분리 이후 오랜 시간이 지나 B 마스터 노드가 NA1에서 유실 됐음으로 판단 되어 B1 노드를 마스터 노드로 승격시킬 경우 문제가 된다. 이 경우 중간에 NA2의 B로 write 했던 데이터들은 유실되게 된다. 
 
-There is another notable scenario where Redis Cluster will lose writes, that
-happens during a network partition where a client is isolated with a minority
-of instances including at least a master.
+레디스 클러스터에서는 이러한 상황을 명시적으로 사용자에게 알려주고 방지하기 위해 Z1이 NA2의 B로 보낼 수 있는 write 양을 조절하는 **`maximum window`** 를 관리한다. 네트워크 분리 이후 지정된 시간만큼의 시간이 지난 경우 더 이상 NA2로는 어떤 write 도 하지 못하도록 방지한다.
 
-Take as an example our 6 nodes cluster composed of A, B, C, A1, B1, C1,
-with 3 masters and 3 slaves. There is also a client, that we will call Z1.
+레디스 클러스터를 사용할 때 이 maximum window 시간을 적절히 정하는 것이 매우 중요하고, 실제 설정파일에서 **`node timeout`** 으로 확인할 수 있다. node timeout이 모두 지난뒤에는, 같은 파티션에 존재하지 않는 마스터 노드는 모두 유실된것으로 판별하고 레플리케이션을 가지고 있는 슬레이브 노드들을 마스터로 격상 시킨다. 분리된 마스터 노드 또한 주변 마스터 노드들에 대한 감지가 node timeout 동안 실패할 경우 자체적으로 중단하고 들어오는 write 요청을 거부한다. 
 
-After a partition occurs, it is possible that in one side of the
-partition we have A, C, A1, B1, C1, and in the other side we have B and Z1.
 
-Z1 is still able to write to B, that will accept its writes. If the
-partition heals in a very short time, the cluster will continue normally.
-However if the partition lasts enough time for B1 to be promoted to master
-in the majority side of the partition, the writes that Z1 is sending to B
-will be lost.
-
-Note that there is a **maximum window** to the amount of writes Z1 will be able
-to send to B: if enough time has elapsed for the majority side of the
-partition to elect a slave as master, every master node in the minority
-side stops accepting writes.
-
-This amount of time is a very important configuration directive of Redis
-Cluster, and is called the **node timeout**.
-
-After node timeout has elapsed, a master node is considered to be failing,
-and can be replaced by one of its replicas.
-Similarly after node timeout has elapsed without a master node to be able
-to sense the majority of the other master nodes, it enters an error state
-and stops accepting writes.
 
 Redis Cluster configuration parameters
 ===
