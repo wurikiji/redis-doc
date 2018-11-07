@@ -4,7 +4,7 @@
 This repository keeps the translation of the original redis documents. 
 - [lru-cache.md](topics/lru-cache.md)
 - [partitioning.md](topics/partitioning.md)
-- [cluster-tutorial.md](topics/cluster-tutorial.md) 
+- [cluster-tutorial.md](topics/cluster-tutorial.md) : 
 
 ## Clients
 
